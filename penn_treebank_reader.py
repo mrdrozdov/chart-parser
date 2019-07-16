@@ -67,7 +67,8 @@ def tree_to_spans(tree):
         for x in tree:
             spansize = helper(x, pos+size)
             size += spansize
-        spans.append((pos, size, tree.label()))
+        label = tree.label().split('-')[0] # TODO: This is wrong!
+        spans.append((pos, size, label))
         return size
     helper(tree)
     return spans

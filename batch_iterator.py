@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 import numpy as np
 
 import torch
@@ -46,6 +48,78 @@ class SimpleSampler(Sampler):
         if self.include_partial and length * self.batch_size < len(self.order):
             length += 1
         return length
+
+
+class FixedLengthSampler(Sampler):
+
+    def __init__(self, data_source, batch_size, include_partial=False, rng=None):
+        self.data_source = data_source
+        self.active = False
+        if rng is None:
+            rng = np.random.RandomState(seed=11)
+        self.rng = rng
+        self.batch_size = batch_size
+        self.include_partial = include_partial
+        self.epoch = 0
+
+    def reset(self):
+        length_map = OrderedDict()
+        for i in range(len(self.data_source)):
+            x = self.data_source.dataset[i]
+            length_map.setdefault(len(x), []).append(i)
+
+        # Shuffle the order.
+        for length in length_map.keys():
+            self.rng.shuffle(length_map[length])
+
+        # Initialize state.
+        state = {}
+        for length, arr in length_map.items():
+            batch_size = self.batch_size
+            nbatches = len(arr) // batch_size
+            surplus = nbatches * batch_size < len(arr)
+            state[length] = dict(nbatches=nbatches, surplus=surplus, position=-1)
+
+        # Batch order, in terms of length.
+        order = []
+        for length, v in state.items():
+            order += [length] * v['nbatches']
+
+        ## Optionally, add partial batches.
+        if self.include_partial:
+            for length, v in state.items():
+                if v['surplus']:
+                    order += [length]
+
+        self.rng.shuffle(order)
+        self.length_map = length_map
+        self.state = state
+        self.order = order
+        self.index = -1
+
+    def get_next_batch(self):
+        index = self.index + 1
+        length = self.order[index]
+        batch_size = self.batch_size
+        position = self.state[length]['position'] + 1
+        start = position * batch_size
+        batch_index = self.length_map[length][start:start+batch_size]
+
+        self.state[length]['position'] = position
+        self.index = index
+
+        return batch_index
+
+    def __iter__(self):
+        self.reset()
+
+        for _ in range(len(self)):
+            yield self.get_next_batch()
+
+        self.epoch += 1
+
+    def __len__(self):
+        return len(self.order)
 
 
 class SimpleDataset(torch.utils.data.Dataset):
@@ -101,7 +175,7 @@ class BatchIterator(object):
         if self.loader is None:
             rng = np.random.RandomState(seed=self.seed)
             dataset = SimpleDataset(self.sentences)
-            sampler = SimpleSampler(dataset, batch_size=batch_size, rng=rng, include_partial=include_partial)
+            sampler = FixedLengthSampler(dataset, batch_size=batch_size, rng=rng, include_partial=include_partial)
             loader = torch.utils.data.DataLoader(dataset, shuffle=(sampler is None), num_workers=self.num_workers, batch_sampler=sampler, collate_fn=collate_fn)
             self.loader = loader
 
